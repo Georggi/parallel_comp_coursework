@@ -1,4 +1,4 @@
-from multiprocessing import Manager, Pool
+from multiprocessing import Manager, Pool, Lock
 
 
 class Database:
@@ -6,6 +6,7 @@ class Database:
     def __init__(self, manager: Manager):
         """Initialize database dict with process-safe dictionary"""
         self.__db = manager.dict()
+        self.__db_lock = Lock()
 
     def __getitem__(self, item: str):
         """Implement magic for getting item from index by key
