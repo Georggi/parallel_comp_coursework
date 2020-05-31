@@ -1,22 +1,18 @@
 import os
-import re
 import string
-from multiprocessing import Process
-from multiprocessing import Queue
-from time import time
-from multiprocessing import Manager, Pool, Lock
+from multiprocessing import Process, Manager, Queue
 from collections import Counter
 from Occurance import Occurance
-lock = Lock()
 
 
 class Index:
-    def __init__(self, scope, variant):
+    def __init__(self, scope, variant, _all):
         self.files = []
-        self.init_files(scope, variant)
+        self.init_files(scope, variant, _all)
         self.db = Manager().dict()
+        self._all = _all
 
-    def init_files(self, scope, variant, all_=True):
+    def init_files(self, scope, variant, all_):
         for folder in os.listdir(scope):
             for folder2 in os.listdir(os.path.join(scope, folder)):
                 if os.path.isdir(file_folder := os.path.join(scope, folder, folder2)):
@@ -32,23 +28,25 @@ class Index:
 
         queue = Queue()
         send_queue = Queue()
-        processes = [Process(target=self.add_to_index, args=(queue, send_queue, )) for i in range(cpu_count)]
-        updater = Process(target=self.process_queue, args=(send_queue,))
-        t1 = time()
-        updater.start()
+        processes = [Process(target=self.add_to_index, args=(queue, send_queue, ), name=f'proc{i}') for i in range(cpu_count)]
+        updaters = [Process(target=self.process_queue, args=(send_queue,), name=f'upd{i}') for i in range(cpu_count)]
+        for updater in updaters:
+            updater.start()
         for i in processes:
             i.start()
         for i in self.files:
             queue.put(i)
-        for i in processes:
+        for _ in processes:
             queue.put(None)
         for i in processes:
             i.join()
-        send_queue.put(None)
-        updater.join()
-        print(time()-t1)
+        for _ in updaters:
+            send_queue.put(None)
+        for updater in updaters:
+            updater.join()
 
-    def add_to_index(self, queue, send_queue):
+    @staticmethod
+    def add_to_index(queue, send_queue):
         while (file := queue.get()) is not None:
             try:
                 with open(file, encoding="utf8") as f:
@@ -69,4 +67,25 @@ class Index:
                     local_dict[k] += (v, file)
                 else:
                     local_dict[k] = Occurance(v, file)
+        self.db.update(local_dict)
+
+    def find(self, value):
+        return self.db.get(value, None)
+
+    def build_sequential(self):
+        local_dict = {}
+        for file in self.files:
+            try:
+                with open(file, encoding="utf8") as f:
+                    text = f.read()
+                    text.translate(str.maketrans('', '', string.punctuation))
+                    words = text.split(' ')
+                counter = Counter(words)
+                for k, v in counter.items():
+                    if k in local_dict:
+                        local_dict[k] += (v, file)
+                    else:
+                        local_dict[k] = Occurance(v, file)
+            except Exception as e:
+                print(e, file)
         self.db.update(local_dict)
