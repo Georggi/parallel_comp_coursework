@@ -1,15 +1,24 @@
 import os
 import string
-from multiprocessing import Process, Manager, Queue
+from multiprocessing import Pool
 from collections import Counter
 from Occurance import Occurance
+from more_itertools import distribute, flatten
+
+
+def merge_into_dict(initital, *dicts):
+    for k, v in flatten(i.items() for i in dicts):
+        if k in initital:
+            initital[k] += v
+        else:
+            initital[k] = v
 
 
 class Index:
     def __init__(self, scope, variant, _all):
         self.files = []
         self.init_files(scope, variant, _all)
-        self.db = Manager().dict()
+        self.db = {}
         self._all = _all
 
     def init_files(self, scope, variant, all_):
@@ -25,67 +34,44 @@ class Index:
                                                       len(files) // 50 * (variant - 1):len(files) // 50 * variant])
 
     def build(self, cpu_count):
-
-        queue = Queue()
-        send_queue = Queue()
-        processes = [Process(target=self.add_to_index, args=(queue, send_queue, ), name=f'proc{i}') for i in range(cpu_count)]
-        updaters = [Process(target=self.process_queue, args=(send_queue,), name=f'upd{i}') for i in range(cpu_count)]
-        for updater in updaters:
-            updater.start()
-        for i in processes:
-            i.start()
-        for i in self.files:
-            queue.put(i)
-        for _ in processes:
-            queue.put(None)
-        for i in processes:
-            i.join()
-        for _ in updaters:
-            send_queue.put(None)
-        for updater in updaters:
-            updater.join()
+        with Pool(processes=cpu_count) as pool:
+            data = pool.starmap(self.add_to_local_index, ([chunk] for chunk in distribute(cpu_count, self.files)))
+        merge_into_dict(self.db, *data)
 
     @staticmethod
-    def add_to_index(queue, send_queue):
-        while (file := queue.get()) is not None:
+    def add_to_local_index(files):
+        local_dict = {}
+        for file in files:
             try:
                 with open(file, encoding="utf8") as f:
                     text = f.read()
-                    text.translate(str.maketrans('', '', string.punctuation))
-                    words = text.split(' ')
-                counter = Counter(words)
-                send_queue.put((counter, file))
-            except Exception as e:
-                print(e, file)
-
-    def process_queue(self, s_queue):
-        local_dict = {}
-        while item := s_queue.get():
-            counter, file = item
-            for k, v in counter.items():
-                if k in local_dict:
-                    local_dict[k] += (v, file)
-                else:
-                    local_dict[k] = Occurance(v, file)
-        self.db.update(local_dict)
-
-    def find(self, value):
-        return self.db.get(value, None)
-
-    def build_sequential(self):
-        local_dict = {}
-        for file in self.files:
-            try:
-                with open(file, encoding="utf8") as f:
-                    text = f.read()
-                    text.translate(str.maketrans('', '', string.punctuation))
-                    words = text.split(' ')
+                text.translate(str.maketrans('', '', string.punctuation))
+                words = text.split(' ')
                 counter = Counter(words)
                 for k, v in counter.items():
                     if k in local_dict:
                         local_dict[k] += (v, file)
                     else:
-                        local_dict[k] = Occurance(v, file)
+                        local_dict[k] = Occurance(v, [file])
             except Exception as e:
                 print(e, file)
-        self.db.update(local_dict)
+        return local_dict
+
+    def find(self, value):
+        return self.db.get(value, None)
+
+    def build_sequential(self):
+        for file in self.files:
+            try:
+                with open(file, encoding="utf8") as f:
+                    text = f.read()
+                text.translate(str.maketrans('', '', string.punctuation))
+                words = text.split(' ')
+                counter = Counter(words)
+                for k, v in counter.items():
+                    if k in self.db:
+                        self.db[k] += (v, file)
+                    else:
+                        self.db[k] = Occurance(v, file)
+            except Exception as e:
+                print(e, file)
